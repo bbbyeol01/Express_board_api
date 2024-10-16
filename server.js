@@ -41,6 +41,7 @@ app.get("/api/db-check", async (req, res) => {
 
 app.get("/api/board", async (req, res) => {
   const { page } = req.query;
+
   if (!page) {
     page = 1;
   }
@@ -48,13 +49,22 @@ app.get("/api/board", async (req, res) => {
   console.log(page);
 
   try {
-    const [posts] = await db.query(
-      `SELECT post.idx, member.nickname, title, content, time FROM post JOIN member WHERE post.writer = member.id ORDER BY post.idx DESC LIMIT ${
-        page == 1 ? 0 : page * 10
-      }, ${page * 10}`
+    const [totalCount] = await db.query(
+      `SELECT COUNT(*) AS total 
+      FROM post`
     );
 
-    return res.status(200).json({ posts: posts });
+    const [posts] = await db.query(
+      `SELECT post.idx, member.nickname, title, content, time 
+      FROM post JOIN member 
+      ON post.writer = member.id 
+      ORDER BY post.idx DESC
+      LIMIT ${(page - 1) * 10}, 10`
+    );
+
+    console.log(posts);
+
+    return res.status(200).json({ posts, totalCount });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server Error" });

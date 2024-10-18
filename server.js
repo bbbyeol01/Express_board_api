@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const axios = require("axios");
 
 const db = require("./db");
 
@@ -15,6 +16,7 @@ app.use(
   cors({
     origin: "http://localhost:3000", // 허용할 도메인
     methods: "GET,HEAD,PUT,PATCH,POST,DELETE", // 허용할 HTTP 메소드
+    allowedHeaders: ["Authorization", "Content-Type"], // 허용할 헤더
     credentials: true, // 쿠키 전송 허용
   })
 );
@@ -128,6 +130,83 @@ function validInput(writer, title, content) {
     typeof content === "string" && 0 < content.length && content.length <= 1000;
   return isValidWriter && isValidTitle && isValidContent;
 }
+
+// ---------------------------------------------------------
+// 카카오 로그인
+
+const kakaoRedirectUrl = `http://localhost:8080/auth/kakao/callback`;
+const KAKAO_CLIENT_KEY = process.env.KAKAO_CLIENT_KEY;
+// const KAKAO_REST_API_KEY = process.env.KAKAO_REST_API_KEY;
+
+app.get("/auth/kakao", (req, res) => {
+  const kakaoAuthUrl = `https://kauth.kakao.com/oauth/authorize?response_type=code&client_id=${KAKAO_CLIENT_KEY}&redirect_uri=${kakaoRedirectUrl}`;
+  res.redirect(kakaoAuthUrl);
+});
+
+app.get("/auth/kakao/callback", async (req, res) => {
+  const { code } = req.query;
+
+  console.log(code);
+
+  try {
+    // 토큰 요청
+    const tokenResponse = await axios.post(
+      "https://kauth.kakao.com/oauth/token",
+      null,
+      {
+        params: {
+          grant_type: "authorization_code",
+          client_id: KAKAO_CLIENT_KEY,
+          redirect_uri: kakaoRedirectUrl,
+          code: code,
+        },
+      }
+    );
+
+    const accessToken = tokenResponse.data.access_token;
+    // console.log(accessToken);
+
+    // 토큰을 쿠키에 저장 (이때, httpOnly 옵션을 활성화하여 보안 강화)
+    res.cookie("accessToken", accessToken, {
+      httpOnly: false,
+      secure: false, // https를 사용해야 함
+      maxAge: 3600000,
+    });
+
+    // 클라이언트로 리다이렉트
+    res.redirect("http://localhost:3000");
+  } catch (error) {
+    console.error(error);
+    res.status(500).send("로그인에 실패했습니다.");
+  }
+});
+
+app.get("/api/kakao/member", async (req, res) => {
+  try {
+    const accessToken = req.headers.authorization.split(" ")[1]; // 'Bearer ' 제거
+    console.log(accessToken);
+
+    //   // 사용자 정보 요청
+    const userInfoResponse = await axios.get(
+      "https://kapi.kakao.com/v2/user/me",
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    const userInfo = userInfoResponse.data;
+    console.log(userInfo);
+
+    // const id = userInfo.id;
+    const nickname = userInfo.properties.nickname;
+    const profile_image = userInfo.properties.profile_image;
+    res.status(200).json({ nickname, profile_image });
+  } catch (error) {
+    console.error(error);
+  }
+});
 
 // 서버 실행
 app.listen(port, () => {

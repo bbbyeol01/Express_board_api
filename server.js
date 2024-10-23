@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const axios = require("axios");
+const jwt = require("jsonwebtoken");
 
 const db = require("./db");
 
@@ -10,6 +11,7 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 8080;
+const JWT_SECRET_KEY = process.env.JWT_SECRET_KEY;
 
 // CORS 설정
 app.use(
@@ -119,7 +121,7 @@ app.post("/api/board", async (req, res) => {
 });
 
 function validInput(writer, title, content) {
-  writer = writer.replace("<", "").replace(">", "").trim();
+  writer = writer.toString().replace("<", "").replace(">", "").trim();
   title = title.replace("<", "﹤").replace(">", "﹥").trim();
 
   const isValidWriter =
@@ -150,7 +152,7 @@ app.get("/auth/kakao/callback", async (req, res) => {
 
   try {
     // 토큰 요청
-    const tokenResponse = await axios.post(
+    const kakaoTokenReponse = await axios.post(
       "https://kauth.kakao.com/oauth/token",
       null,
       {
@@ -163,49 +165,260 @@ app.get("/auth/kakao/callback", async (req, res) => {
       }
     );
 
-    const accessToken = tokenResponse.data.access_token;
-    // console.log(accessToken);
+    const kakaoAccessToken = kakaoTokenReponse.data.access_token;
 
-    // 토큰을 쿠키에 저장 (이때, httpOnly 옵션을 활성화하여 보안 강화)
+    // --------------------kakao 정보 가져오기 -----------
+    //   // 사용자 정보 요청
+    const userInfoResponse = await axios.get(
+      "https://kapi.kakao.com/v2/user/me",
+      {
+        headers: {
+          Authorization: `Bearer ${kakaoAccessToken}`,
+        },
+      }
+    );
+
+    const userInfo = userInfoResponse.data;
+
+    const query = "SELECT id FROM member WHERE id = ?";
+    const [result] = await db.query(query, [userInfo.id]);
+
+    console.log(result[0]);
+    if (!result[0] || result[0].length === 0) {
+      console.log("등록되지 않은 아이디입니다.");
+
+      console.log(userInfo);
+      const params = {
+        id: userInfo.id,
+        nickname: userInfo.properties.nickname,
+        pwd: null,
+        social: "KAKAO",
+      };
+
+      axios
+        .post("http://localhost:8080/api/register", params)
+        .then((response) => {
+          console.log("카카오 가입이 완료되었습니다.");
+        })
+        .catch((error) => {
+          console.log("카카오 가입이 실패하였습니다.");
+          console.error(error);
+        });
+    }
+
+    // const id = userInfo.id;
+    const nickname = userInfo.properties.nickname;
+    const profile_image = userInfo.properties.profile_image;
+    const id = userInfo.id;
+
+    // --------------------------------------------
+
+    // 사용자 정보를 토대로 자체 JWT 발급
+    const accessToken = jwt.sign(
+      {
+        id: id,
+        nickname: nickname,
+        profile_image: profile_image,
+        loginMethod: "KAKAO", // 로그인 방식 명시
+      },
+      JWT_SECRET_KEY,
+      { expiresIn: "1h" }
+    );
+
+    // 토큰 쿠키에 저장
     res.cookie("accessToken", accessToken, {
-      httpOnly: false,
-      secure: false, // https를 사용해야 함
-      maxAge: 3600000,
+      httpOnly: false, // 개발 환경에서는 끔
+      secure: false, // https 여부
+      maxAge: 3600, // ms
     });
 
     // 클라이언트로 리다이렉트
     res.redirect("http://localhost:3000");
   } catch (error) {
     console.error(error);
-    res.status(500).send("로그인에 실패했습니다.");
+    console.error("로그인에 실패했습니다.");
+    res.redirect("http://localhost:3000/login");
   }
 });
 
-app.get("/api/kakao/member", async (req, res) => {
-  try {
-    const accessToken = req.headers.authorization.split(" ")[1]; // 'Bearer ' 제거
-    console.log(accessToken);
+app.post("/api/login", async (req, res) => {
+  const { id, pwd } = req.body;
 
-    //   // 사용자 정보 요청
-    const userInfoResponse = await axios.get(
-      "https://kapi.kakao.com/v2/user/me",
+  try {
+    const query =
+      "SELECT id, nickname, profile_image FROM member WHERE id = ? AND pwd = ?";
+    const [result] = await db.query(query, [id, pwd]);
+
+    console.log(result[0]);
+
+    if (!result[0] || result[0].length === 0) {
+      return res
+        .status(404)
+        .json({ message: "아이디나 비밀번호가 일치하지 않습니다." });
+    }
+
+    // 토큰 생성
+    const accessToken = jwt.sign(
       {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
+        id: result[0].id,
+        nickname: result[0].nickname,
+        profile_image: result[0].profile_image,
+      },
+      JWT_SECRET_KEY,
+      { expiresIn: "1h" }
     );
 
-    const userInfo = userInfoResponse.data;
-    console.log(userInfo);
+    // 토큰을 클라이언트로 응답
+    return res.status(200).json({ accessToken });
+  } catch (error) {
+    return res.status(500).json({ message: "Server Error!" });
+  }
+});
 
-    // const id = userInfo.id;
-    const nickname = userInfo.properties.nickname;
-    const profile_image = userInfo.properties.profile_image;
-    res.status(200).json({ nickname, profile_image });
+app.get("/api/member", async (req, res) => {
+  console.log(req.headers.authorization);
+  const accessToken = req.headers.authorization.split(" ")[1]; // 'Bearer ' 제거
+
+  try {
+    jwt.verify(accessToken, JWT_SECRET_KEY, (err, decoded) => {
+      if (err) {
+        console.error(err);
+        res.status(404).json({ message: "" });
+        return;
+      }
+
+      // decoded 객체에서 정보 추출
+      console.log("Decoded JWT:", decoded); // Payload 정보
+
+      const id = decoded.id;
+      const nickname = decoded.nickname;
+
+      res.status(200).json({ id, nickname });
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(404).json({ message: "유효하지 않은 토큰입니다." });
+  }
+});
+
+/** 카카오 유저 정보 가져오기 */
+// app.get("/api/member/kakao", async (req, res) => {
+//   try {
+//     const accessToken = req.headers.authorization.split(" ")[1]; // 'Bearer ' 제거
+//     console.log(accessToken);
+
+//     //   // 사용자 정보 요청
+//     const userInfoResponse = await axios.get(
+//       "https://kapi.kakao.com/v2/user/me",
+//       {
+//         headers: {
+//           Authorization: `Bearer ${accessToken}`,
+//         },
+//       }
+//     );
+
+//     const userInfo = userInfoResponse.data;
+//     console.log(userInfoResponse.data.id);
+
+//     const query = "SELECT * FROM member WHERE id = ?";
+//     const result = await db.query(query, [userInfoResponse.data.id]);
+
+//     console.log(result[0]);
+//     if (!result[0] || result[0].length === 0) {
+//       console.log("등록되지 않은 아이디입니다.");
+
+//       const params = {
+//         id: userInfoResponse.data.id,
+//         social: "KAKAO",
+//         nickname: "NONE",
+//       };
+
+//       axios
+//         .post("http://localhost:8080/api/register", params)
+//         .then((response) => {})
+//         .catch((error) => {
+//           console.error(error);
+//         });
+//     }
+
+//     // const id = userInfo.id;
+//     const nickname = userInfo.properties.nickname;
+//     const profile_image = userInfo.properties.profile_image;
+//     res.status(200).json({ nickname, profile_image });
+//   } catch (error) {
+//     console.error(error);
+//   }
+// });
+
+// async function getKaKaoMember(accessToken) {
+//   try {
+//     console.log(accessToken);
+
+//     //   // 사용자 정보 요청
+//     const userInfoResponse = await axios.get(
+//       "https://kapi.kakao.com/v2/user/me",
+//       {
+//         headers: {
+//           Authorization: `Bearer ${accessToken}`,
+//         },
+//       }
+//     );
+
+//     const userInfo = userInfoResponse.data;
+//     console.log(userInfoResponse.data.id);
+
+//     const query = "SELECT * FROM member WHERE id = ?";
+//     const result = await db.query(query, [userInfoResponse.data.id]);
+
+//     console.log(result[0]);
+//     if (!result[0] || result[0].length === 0) {
+//       console.log("등록되지 않은 아이디입니다.");
+
+//       const params = {
+//         id: userInfoResponse.data.id,
+//         social: "KAKAO",
+//         nickname: "NONE",
+//       };
+
+//       axios
+//         .post("http://localhost:8080/api/register", params)
+//         .then((response) => {})
+//         .catch((error) => {
+//           console.error(error);
+//         });
+//     }
+
+//     // const id = userInfo.id;
+//     const nickname = userInfo.properties.nickname;
+//     const profile_image = userInfo.properties.profile_image;
+//     return { nickname, profile_image };
+//   } catch (error) {
+//     console.error(error);
+//   }
+// }
+
+app.post("/api/register", async (req, res) => {
+  const { id, pwd, nickname, social } = req.body;
+
+  try {
+    const query = "SELECT * FROM member WHERE ID = ?";
+
+    const [member] = await db.query(query, [id]);
+
+    if (!member[0] || member[0].length === 0) {
+      const query =
+        "INSERT INTO member (id, pwd, nickname, profile_image, social) VALUES (?, ?, ?, ?, ?)";
+      const result = await db.query(query, [id, pwd, nickname, null, social]);
+
+      return res
+        .status(200)
+        .json({ message: "회원가입에 성공했습니다.", idx: result[0].insertId });
+    }
   } catch (error) {
     console.error(error);
   }
+
+  return res.status(500).json({ message: "Server Error!" });
 });
 
 // 서버 실행

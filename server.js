@@ -301,6 +301,23 @@ app.get("/api/member", async (req, res) => {
   }
 });
 
+// 댓글
+app.get("/api/reply/:postIdx", async (req, res) => {
+  const postIdx = req.params.postIdx;
+
+  console.log(postIdx);
+  try {
+    const query =
+      "SELECT content, nickname, time FROM reply r JOIN member m ON r.member_id = m.id WHERE post_idx = ? ORDER BY time";
+    const [replys] = await db.query(query, [postIdx]);
+
+    // console.log(response[0]);
+    res.status(200).json({ replys: replys });
+  } catch (error) {
+    console.error(error);
+  }
+});
+
 /** 카카오 유저 정보 가져오기 */
 // app.get("/api/member/kakao", async (req, res) => {
 //   try {

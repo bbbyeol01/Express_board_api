@@ -59,7 +59,7 @@ app.get("/api/board", async (req, res) => {
     );
 
     const [posts] = await db.query(
-      `SELECT post.idx, member.nickname, title, content, time 
+      `SELECT post.idx, member.nickname, title, content, time, reply_count AS replyCount 
       FROM post JOIN member 
       ON post.writer = member.id 
       ORDER BY post.idx DESC
@@ -121,6 +121,9 @@ app.post("/api/board", async (req, res) => {
 });
 
 function validInput(writer, title, content) {
+  if (!writer) {
+    return;
+  }
   writer = writer.toString().replace("<", "").replace(">", "").trim();
   title = title.replace("<", "﹤").replace(">", "﹥").trim();
 
@@ -206,10 +209,9 @@ app.get("/auth/kakao/callback", async (req, res) => {
         });
     }
 
-    // const id = userInfo.id;
-    const nickname = userInfo.properties.nickname;
-    const profile_image = userInfo.properties.profile_image;
     const id = userInfo.id;
+    // const nickname = userInfo.properties.nickname;
+    // const profile_image = userInfo.properties.profile_image;
 
     // --------------------------------------------
 
@@ -217,8 +219,9 @@ app.get("/auth/kakao/callback", async (req, res) => {
     const accessToken = jwt.sign(
       {
         id: id,
-        nickname: nickname,
-        profile_image: profile_image,
+        accessToken: kakaoAccessToken,
+        // nickname: nickname,
+        // profile_image: profile_image,
         loginMethod: "KAKAO", // 로그인 방식 명시
       },
       JWT_SECRET_KEY,
@@ -229,7 +232,7 @@ app.get("/auth/kakao/callback", async (req, res) => {
     res.cookie("accessToken", accessToken, {
       httpOnly: false, // 개발 환경에서는 끔
       secure: false, // https 여부
-      maxAge: 3600, // ms
+      maxAge: 360000, // ms
     });
 
     // 클라이언트로 리다이렉트
@@ -271,7 +274,8 @@ app.post("/api/login", async (req, res) => {
     // 토큰을 클라이언트로 응답
     return res.status(200).json({ accessToken });
   } catch (error) {
-    return res.status(500).json({ message: "Server Error!" });
+    console.error(error);
+    return res.status(500).json({ message: error });
   }
 });
 
@@ -291,13 +295,32 @@ app.get("/api/member", async (req, res) => {
       console.log("Decoded JWT:", decoded); // Payload 정보
 
       const id = decoded.id;
-      const nickname = decoded.nickname;
+      // const nickname = decoded.nickname;
 
-      res.status(200).json({ id, nickname });
+      res.status(200).json({ id });
     });
   } catch (error) {
     console.error(error);
     res.status(404).json({ message: "유효하지 않은 토큰입니다." });
+  }
+});
+
+app.get("/api/memberInfo", async (req, res) => {
+  const { id } = req.query;
+
+  console.error("/api/memberInfo");
+  console.log(id);
+  try {
+    const query = "SELECT nickname, profile_image FROM member WHERE id = ?";
+    const [response] = await db.query(query, [id]);
+    console.log(response[0]);
+
+    res.status(200).json({
+      nickname: response[0].nickname,
+      profile_image: response[0].profile_image,
+    });
+  } catch (error) {
+    console.error(error);
   }
 });
 
@@ -315,6 +338,36 @@ app.get("/api/reply/:postIdx", async (req, res) => {
     res.status(200).json({ replys: replys });
   } catch (error) {
     console.error(error);
+  }
+});
+
+app.post("/api/reply", async (req, res) => {
+  console.log(req.body);
+  const { post_idx, content, member_id } = req.body;
+
+  console.log(
+    `post_idx: ${post_idx}, content: ${content}, member_id: ${member_id}`
+  );
+
+  try {
+    const queryToReply =
+      "INSERT INTO reply (post_idx, content, member_id) VALUES ( ?, ?, ? )";
+
+    const [response] = await db.query(queryToReply, [
+      post_idx,
+      content,
+      member_id,
+    ]);
+
+    const queryToPost =
+      "UPDATE post SET reply_count = reply_count + 1 WHERE idx = ?";
+
+    await db.query(queryToPost, [post_idx]);
+
+    res.status(200).json({ message: "성공!" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server Error!" });
   }
 });
 
